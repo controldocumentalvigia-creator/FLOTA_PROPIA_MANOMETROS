@@ -10,51 +10,52 @@ from github import Github, GithubException
 # CONFIGURACIÓN DE GITHUB Y FUNCIONES
 # ==========================================
 def _repo():
+    # Esta función se conecta a tu repositorio
     g = Github(st.secrets["GITHUB_TOKEN"])
     return g.get_repo(st.secrets["GITHUB_REPO"])
 
 @st.cache_data(ttl=60)
 def obtener_lista_config(ruta_archivo):
+    # Lee los archivos de conductores y clientes
     try:
         repo = _repo()
         file = repo.get_contents(ruta_archivo)
         return json.loads(file.decoded_content.decode("utf-8"))
-    except Exception as e:
+    except Exception:
         return []
 
 def guardar_envio(tipo: str, datos: dict, archivos: list) -> str:
-    try:
-        repo = _repo()
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        conductor = (datos.get("conductor") or "sin_nombre").replace(" ", "_")
-        envio_id = f"{ts}_{conductor}"
+    # Guarda los datos y archivos en GitHub
+    repo = _repo()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    conductor = (datos.get("conductor") or "sin_nombre").replace(" ", "_")
+    envio_id = f"{ts}_{conductor}"
 
-        urls = []
-        for i, file_info in enumerate(archivos):
-            if not file_info: continue
-            ext = file_info["name"].split(".")[-1].lower() if "." in file_info["name"] else "bin"
-            path = f"archivos/{tipo}/{envio_id}_{i+1}.{ext}"
-            
-            repo.create_file(
-                path=path, message=f"archivo {envio_id} #{i+1}",
-                content=file_info["data"], branch="main",
-            )
-            urls.append(f"https://raw.githubusercontent.com/{repo.full_name}/main/{path}")
-
-        datos["_tipo"] = tipo
-        datos["_enviado_en"] = datetime.now().isoformat(timespec="seconds")
-        datos["_archivos"] = urls
-
-        path_json = f"datos/{tipo}/{envio_id}.json"
+    urls = []
+    for i, file_info in enumerate(archivos):
+        if not file_info: continue
+        ext = file_info["name"].split(".")[-1].lower() if "." in file_info["name"] else "bin"
+        path = f"archivos/{tipo}/{envio_id}_{i+1}.{ext}"
+        
         repo.create_file(
-            path=path_json, message=f"registro {envio_id}",
-            content=json.dumps(datos, ensure_ascii=False, indent=2), branch="main",
+            path=path, message=f"archivo {envio_id} #{i+1}",
+            content=file_info["data"], branch="main",
         )
-        return envio_id
-    except Exception as e:
-        raise Exception("Error de conexión con GitHub. Revisa tu Token.")
+        urls.append(f"https://raw.githubusercontent.com/{repo.full_name}/main/{path}")
+
+    datos["_tipo"] = tipo
+    datos["_enviado_en"] = datetime.now().isoformat(timespec="seconds")
+    datos["_archivos"] = urls
+
+    path_json = f"datos/{tipo}/{envio_id}.json"
+    repo.create_file(
+        path=path_json, message=f"registro {envio_id}",
+        content=json.dumps(datos, ensure_ascii=False, indent=2), branch="main",
+    )
+    return envio_id
 
 def obtener_todos_los_datos():
+    # Descarga todos los JSON de la carpeta datos/
     repo = _repo()
     registros = []
     try:
@@ -75,6 +76,7 @@ def obtener_todos_los_datos():
     return df
 
 def calcular_metricas(df):
+    # Calcula KMs y Horas
     if df.empty: return pd.DataFrame()
     df['datetime'] = pd.to_datetime(df['fecha_envio'] + ' ' + df['hora_envio'])
     df['kilometraje'] = pd.to_numeric(df['kilometraje'], errors='coerce')
@@ -112,10 +114,10 @@ def calcular_metricas(df):
 st.set_page_config(page_title="Bitácora Conductor", page_icon="🚗", layout="centered")
 st.markdown("<style>.stButton button { width: 100%; font-size: 18px; padding: 14px; background-color: #1976D2; color: white; }</style>", unsafe_allow_html=True)
 
-# Cargar listas base
+# Cargar listas
 lista_conductores = obtener_lista_config("config/conductores.json")
-nombres_conductores = [c["nombre"] for c in lista_conductores] if lista_conductores else ["Cargando conductores..."]
-lista_clientes = obtener_lista_config("config/clientes.json") or ["Cargando clientes..."]
+nombres_conductores = [c["nombre"] for c in lista_conductores] if lista_conductores else ["Error: Falta config/conductores.json"]
+lista_clientes = obtener_lista_config("config/clientes.json") or ["Error: Falta config/clientes.json"]
 
 with st.sidebar:
     st.header("⚙️ Menú")
@@ -130,6 +132,10 @@ if es_admin:
     
     try:
         with st.spinner("Conectando con GitHub y calculando métricas..."):
+            # Prueba de conexión
+            repo_test = _repo()
+            st.success(f"✅ Conectado al repositorio: {repo_test.full_name}")
+            
             df = obtener_todos_los_datos()
         
         if df.empty:
@@ -157,7 +163,9 @@ if es_admin:
                 st.dataframe(df.sort_values(by="_enviado_en", ascending=False), use_container_width=True)
                 
     except Exception as e:
-        st.error("🚨 Error de conexión con GitHub. El Token o el nombre del repositorio en los 'Secrets' están mal configurados. Revisa el Paso 1 y 2 del instructivo.")
+        # AQUÍ MOSTRAMOS EL ERROR REAL
+        st.error(f"🚨 Error de GitHub: {str(e)}")
+        st.info("Revisa que tu Token y el nombre del repositorio en Streamlit Secrets sean exactos.")
 
 # ==========================================
 # VISTA 2: MODO CONDUCTOR (Formularios)
@@ -194,7 +202,7 @@ else:
             st.success(f"✅ Registro guardado. ID: `{envio_id}`")
             st.balloons()
         except Exception as e:
-            st.error(f"❌ Error al guardar. Revisa la conexión a internet.")
+            st.error(f"❌ Error al guardar. Revisa la conexión a internet o los permisos.")
 
     # --- Pestaña 1 ---
     with tabs[0]:
