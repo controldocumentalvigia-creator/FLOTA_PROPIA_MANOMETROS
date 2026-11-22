@@ -13,43 +13,46 @@ def _repo():
     g = Github(st.secrets["GITHUB_TOKEN"])
     return g.get_repo(st.secrets["GITHUB_REPO"])
 
-@st.cache_data(ttl=60) # Guarda en caché por 60 seg para que cargue rápido
+@st.cache_data(ttl=60)
 def obtener_lista_config(ruta_archivo):
     try:
         repo = _repo()
         file = repo.get_contents(ruta_archivo)
         return json.loads(file.decoded_content.decode("utf-8"))
-    except:
+    except Exception as e:
         return []
 
 def guardar_envio(tipo: str, datos: dict, archivos: list) -> str:
-    repo = _repo()
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    conductor = (datos.get("conductor") or "sin_nombre").replace(" ", "_")
-    envio_id = f"{ts}_{conductor}"
+    try:
+        repo = _repo()
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        conductor = (datos.get("conductor") or "sin_nombre").replace(" ", "_")
+        envio_id = f"{ts}_{conductor}"
 
-    urls = []
-    for i, file_info in enumerate(archivos):
-        if not file_info: continue
-        ext = file_info["name"].split(".")[-1].lower() if "." in file_info["name"] else "bin"
-        path = f"archivos/{tipo}/{envio_id}_{i+1}.{ext}"
-        
+        urls = []
+        for i, file_info in enumerate(archivos):
+            if not file_info: continue
+            ext = file_info["name"].split(".")[-1].lower() if "." in file_info["name"] else "bin"
+            path = f"archivos/{tipo}/{envio_id}_{i+1}.{ext}"
+            
+            repo.create_file(
+                path=path, message=f"archivo {envio_id} #{i+1}",
+                content=file_info["data"], branch="main",
+            )
+            urls.append(f"https://raw.githubusercontent.com/{repo.full_name}/main/{path}")
+
+        datos["_tipo"] = tipo
+        datos["_enviado_en"] = datetime.now().isoformat(timespec="seconds")
+        datos["_archivos"] = urls
+
+        path_json = f"datos/{tipo}/{envio_id}.json"
         repo.create_file(
-            path=path, message=f"archivo {envio_id} #{i+1}",
-            content=file_info["data"], branch="main",
+            path=path_json, message=f"registro {envio_id}",
+            content=json.dumps(datos, ensure_ascii=False, indent=2), branch="main",
         )
-        urls.append(f"https://raw.githubusercontent.com/{repo.full_name}/main/{path}")
-
-    datos["_tipo"] = tipo
-    datos["_enviado_en"] = datetime.now().isoformat(timespec="seconds")
-    datos["_archivos"] = urls
-
-    path_json = f"datos/{tipo}/{envio_id}.json"
-    repo.create_file(
-        path=path_json, message=f"registro {envio_id}",
-        content=json.dumps(datos, ensure_ascii=False, indent=2), branch="main",
-    )
-    return envio_id
+        return envio_id
+    except Exception as e:
+        raise Exception("Error de conexión con GitHub. Revisa tu Token.")
 
 def obtener_todos_los_datos():
     repo = _repo()
@@ -111,8 +114,8 @@ st.markdown("<style>.stButton button { width: 100%; font-size: 18px; padding: 14
 
 # Cargar listas base
 lista_conductores = obtener_lista_config("config/conductores.json")
-nombres_conductores = [c["nombre"] for c in lista_conductores] if lista_conductores else ["Error: Falta config/conductores.json"]
-lista_clientes = obtener_lista_config("config/clientes.json") or ["Error: Falta config/clientes.json"]
+nombres_conductores = [c["nombre"] for c in lista_conductores] if lista_conductores else ["Cargando conductores..."]
+lista_clientes = obtener_lista_config("config/clientes.json") or ["Cargando clientes..."]
 
 with st.sidebar:
     st.header("⚙️ Menú")
@@ -124,31 +127,37 @@ with st.sidebar:
 # ==========================================
 if es_admin:
     st.title("📊 Panel de Administración")
-    with st.spinner("Calculando métricas..."):
-        df = obtener_todos_los_datos()
     
-    if df.empty:
-        st.warning("Aún no hay registros en el sistema.")
-    else:
-        df_resumen = calcular_metricas(df)
-        col1, col2, col3 = st.columns(3)
-        col1.metric("KMs Totales", f"{df_resumen['Total_KMs'].sum():,.1f} km")
-        col2.metric("Hrs Trabajadas", f"{df_resumen['Horas_Trabajadas'].sum():,.1f} h")
-        col3.metric("Hrs Disponibles", f"{df_resumen['Horas_Disponibles'].sum():,.1f} h")
+    try:
+        with st.spinner("Conectando con GitHub y calculando métricas..."):
+            df = obtener_todos_los_datos()
         
-        st.markdown("---")
-        st.subheader("Resumen por Conductor y Día")
-        st.dataframe(df_resumen.sort_values(by="fecha_envio", ascending=False), use_container_width=True)
-        
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df_resumen.to_excel(writer, index=False, sheet_name='Resumen')
-            df.to_excel(writer, index=False, sheet_name='Datos_Crudos')
-        
-        st.download_button("📥 Descargar Reporte en Excel", buffer.getvalue(), f"Reporte_Flota_{date.today()}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
-        
-        with st.expander("Ver registros crudos (Todo el detalle)"):
-            st.dataframe(df.sort_values(by="_enviado_en", ascending=False), use_container_width=True)
+        if df.empty:
+            st.info("El sistema está listo. Aún no hay registros de conductores.")
+        else:
+            df_resumen = calcular_metricas(df)
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("KMs Totales", f"{df_resumen['Total_KMs'].sum():,.1f} km")
+            col2.metric("Hrs Trabajadas", f"{df_resumen['Horas_Trabajadas'].sum():,.1f} h")
+            col3.metric("Hrs Disponibles", f"{df_resumen['Horas_Disponibles'].sum():,.1f} h")
+            
+            st.markdown("---")
+            st.subheader("Resumen por Conductor y Día")
+            st.dataframe(df_resumen.sort_values(by="fecha_envio", ascending=False), use_container_width=True)
+            
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_resumen.to_excel(writer, index=False, sheet_name='Resumen')
+                df.to_excel(writer, index=False, sheet_name='Datos_Crudos')
+            
+            st.download_button("📥 Descargar Reporte en Excel", buffer.getvalue(), f"Reporte_Flota_{date.today()}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+            
+            with st.expander("Ver registros crudos (Todo el detalle)"):
+                st.dataframe(df.sort_values(by="_enviado_en", ascending=False), use_container_width=True)
+                
+    except Exception as e:
+        st.error("🚨 Error de conexión con GitHub. El Token o el nombre del repositorio en los 'Secrets' están mal configurados. Revisa el Paso 1 y 2 del instructivo.")
 
 # ==========================================
 # VISTA 2: MODO CONDUCTOR (Formularios)
@@ -159,7 +168,6 @@ else:
     
     tabs = st.tabs(["🚏 1. Salida", "🟢 2. Inicio", "🏁 3. Fin", "🏠 4. Llegada"])
 
-    # Función auxiliar para capturar conductor y documento
     def selector_conductor(key_prefix):
         nombre_sel = st.selectbox("1. Nombre del Conductor *", nombres_conductores, key=f"{key_prefix}_cond")
         documento = next((c["documento"] for c in lista_conductores if c["nombre"] == nombre_sel), "")
@@ -186,7 +194,7 @@ else:
             st.success(f"✅ Registro guardado. ID: `{envio_id}`")
             st.balloons()
         except Exception as e:
-            st.error(f"❌ Error al guardar: {e}")
+            st.error(f"❌ Error al guardar. Revisa la conexión a internet.")
 
     # --- Pestaña 1 ---
     with tabs[0]:
